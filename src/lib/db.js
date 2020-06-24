@@ -1,143 +1,67 @@
-/**
- Drawing #12549, 4 Doodles (2x2):
+import firebase from 'firebase'
 
-  1 │ 2
- ───┼───
-  3 │ 4
+firebase.initializeApp({
+  apiKey: 'AIzaSyDHIJbOtxWHs-79n04xifJCvkuUEqbxvjQ',
+  authDomain: 'doodles-sync.firebaseapp.com',
+  databaseURL: 'https://doodles-sync.firebaseio.com',
+  projectId: 'doodles-sync',
+  storageBucket: 'doodles-sync.appspot.com',
+  messagingSenderId: '601337200849',
+  appId: '1:601337200849:web:bbc677a6cd5fa8200445f0'
+})
+const db = firebase.database()
+/** @type firebase.database.Reference */
+let settingsRef = null
+/** @type firebase.database.Reference */
+let drawingRef = null
+/** @type firebase.database.Reference */
+let stateRef = null
 
- 1: Doodle #12549-1 (top-left)
-    Virtual drawing devise: A chain of 3 spinning line-segments with a fixed origin and
-    2 drawing points on the vertices of the 2nd and 5th segments.
-    Probability of a spin flip for each segment less than 10%
-
-    A          B           A          D
-    |⟵45.79⟶|⟵56.45⟶|⟵34.00⟶|
-                           ✐         ✐
-    ⤾ 0.2°     ⤿ -2.34°   ⤿ -0.34°  .
-    x: 65.34   x: 12.34    x: 12.34   x:12.34
-    y: 44.22   y:  5.22    y:  5.22   y: 5.22
-
- */
-/**
- * @typedef {{
- *  spin: number,
- *  x: number,
- *  y: number
- * }[]} SegmentState
- *
- * @typedef {SegmentState[][]} DrawingState
- *
- * @typedef {{
- *  length: number
- * }} SegmentData
- *
- * @typedef {{
- *  probabilitySpinFlip: number,
- *  drawingPoints: number[],
- *  segments: SegmentData[],
- *  order: number
- * }} DoodleData
- *
- * @typedef {{
- *  number: number,
- *  width: number,
- *  height: number,
- *  columns: number,
- *  rows: number,
- *  doodles: DoodleData[]
- * }} DrawingData
- *
- */
-function DB () {
-  const firebaseConfig = {
-    apiKey: "AIzaSyDHIJbOtxWHs-79n04xifJCvkuUEqbxvjQ",
-    authDomain: "doodles-sync.firebaseapp.com",
-    databaseURL: "https://doodles-sync.firebaseio.com",
-    projectId: "doodles-sync",
-    storageBucket: "doodles-sync.appspot.com",
-    messagingSenderId: "601337200849",
-    appId: "1:601337200849:web:bbc677a6cd5fa8200445f0"
-  };
-  firebase.initializeApp(firebaseConfig);
-  const database = firebase.database()
-
-  this.auth = callback => {
-    firebase.auth().onAuthStateChanged(function(user) {
-      if (user) {
-        if(typeof callback === 'function') callback(user)
-      } else {
-        if(typeof callback === 'function') callback(null)
-      }
-    })
-    firebase.auth().signInWithEmailAndPassword('tyminko@gmail.com', 'P!*AS5CqcQrg?Sx[')
-      .catch(function(error) {
-        console.error(`%c AUTH %c error: `, 'background:#ffbb00;color:#000', 'color:#00aaff', error)
-      })
-  }
-
-  this.getLastDrawingNumber = () => {
-    return database.ref(`/connections/${uid}`)
-      .once('value')
-      .then(snapshot => {
-        return (snapshot.val() && snapshot.val().number) || 0;
-      })
-  }
-
-  /**
-   * @param {Doodle[]} doodles
-   */
-  this.saveCurrentState = (doodles) => {
-    const state = doodles.map(doodle => {
-      return doodle.segments.map(segment => {
-        return {
-          spin: segment.angle,
-          x: segment.a.x,
-          y: segment.a.y
-        }
-      })
-    })
-    return database.ref(`/states/${uid}`).set(state)
-  }
-
-  /**
-   * @param {number} w
-   * @param {number} h
-   * @param {number} cols
-   * @param {number} rows
-   * @param {Doodle[]} doodles
-   */
-  this.saveDoodles = (w, h, cols, rows, doodles) => {
-    const data = {
-      number: lastDrawingNumber + 1,
-      width: w,
-      height: h,
-      columns: cols,
-      rows: rows,
-      doodles: doodles.map((doodle, i) => doodleToDoodleData(doodle, i))
+export function auth (callback) {
+  firebase.auth().onAuthStateChanged(function (user) {
+    if (user) {
+      if (typeof callback === 'function') callback(user)
+    } else {
+      if (typeof callback === 'function') callback(null)
     }
-    return database.ref(`/connections/${uid}`).set(data)
-  }
+  })
+  const ps = (location.hash || '').substring(1)
+  if (!ps) return
+  firebase.auth()
+    .signInWithEmailAndPassword(process.env.VUE_APP_DB_USER, ps)
+    .catch(function (error) {
+      console.error('%c AUTH %c: ', 'background:#ff0000;color:#000', 'color:#00aaff', error.code, error.message)
+    })
+}
 
-  /**
-   * @param {Doodle} doodle
-   * @param {number} index
-   * @return {DoodleData}
-   */
-  function doodleToDoodleData (doodle, index) {
-    return {
-      order: index,
-      probabilitySpinFlip: doodle.angleDirChangeChance,
-      drawingPoints: doodle.toShow,
-      segments: doodle.segments.map((segment, i) => segmentToSegmentData(segment, i))
-    }
-  }
+export function subscribeSettings (id, callback) {
+  settingsRef = db.ref(`/settings`)
+  settingsRef.on('value', (snap) => {
+    if (typeof callback === 'function') callback(snap.val())
+  })
+}
 
-  /**
-   * @param {Segment} segment
-   * @param {number} index
-   * @return {SegmentData}
-   */
-  function segmentToSegmentData (segment, index) {
-    return { length: segment.length }
-  }
+export function subscribeDrawing (id, callback) {
+  // if (drawingRef) drawingRef.off()
+  drawingRef = db.ref(`/connections/${id}`)
+  drawingRef.on('value', (snap) => {
+    if (typeof callback === 'function') callback(snap.val())
+  })
+}
+
+export function subscribeState (id, callback) {
+  // if (stateRef) stateRef.off()
+  stateRef = db.ref(`/states/${id}`)
+  stateRef.on('value', (snap) => {
+    if (typeof callback === 'function') callback(snap.val())
+  })
+}
+
+export function unsubscribe () {
+  if (settingsRef) settingsRef.off()
+  if (drawingRef) drawingRef.off()
+  if (stateRef) stateRef.off()
+  settingsRef = null
+  drawingRef = null
+  stateRef = null
 }
