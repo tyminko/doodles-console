@@ -1,17 +1,6 @@
 <template>
   <div id="app" :style="mainFontSizeStyle">
     <div v-for="(line, j) in lines" :key="`dh${j}`"  class="line" v-html="line" />
-<!--    <div class="line"><span class="box">###</span></div>-->
-<!--    <div v-for="(drawing, n) in drawings" :key="`dr${n}`">-->
-<!--      <div v-for="(line, i) in drawing.header" :key="`drh${i}`"  class="line" v-html="line" />-->
-<!--      <div v-for="(doodle, i) in drawing.doodles" :key="`d${i}`" class="doodle">-->
-<!--        <div v-for="(line, j) in doodle.header" :key="`dh${j}`"  class="line" v-html="line" />-->
-<!--        <div v-for="(line, j) in doodle.state" :key="`ds${j}`"  class="line" v-html="line" />-->
-<!--        <div class="line"/>-->
-<!--        <div class="line"><span class="box">##</span></div>-->
-<!--        <div class="line"/>-->
-<!--      </div>-->
-<!--    </div>-->
   </div>
 </template>
 
@@ -31,7 +20,8 @@ export default {
     currentDrawingWidth: null,
     numRows: null,
     numCharInLine: null,
-    linePointers: []
+    linePointers: [],
+    version: null
   }),
   created () {
     db.auth(user => {
@@ -45,6 +35,7 @@ export default {
         db.subscribeState(uid, this.updateStateData)
       }
     })
+    window.addEventListener('resize', () => { this.numRows = Math.floor(window.innerHeight / this.fontSize) })
   },
 
   computed: {
@@ -52,7 +43,7 @@ export default {
       return { fontSize: `${this.fontSize}px` }
     },
     lines () {
-      return this.linePointers.map(pointer => {
+      return this.linePointers.map((pointer, i) => {
         return pointer.reduce((res, key) => {
           return res[key]
         }, this.drawings)
@@ -62,27 +53,23 @@ export default {
 
   methods: {
     async updateLines () {
-      this.lines.push('')
       if (!this.currentDrawingNr) return
       const dNr = this.currentDrawingNr
-      const dr = this.drawings[this.currentDrawingNr]
+      const dr = this.drawings[dNr]
       await this.printBlock(dr.header, [dNr, 'header'])
-      const promise = dr.doodles.reduce((promiseChain, doodle, i) => {
+      await dr.doodles.reduce((promiseChain, doodle, i) => {
         return promiseChain.then(() => {
           return this.printBlock(doodle.header, [dNr, 'doodles', i, 'header'])
             .then(() => this.printBlock(doodle.state, [dNr, 'doodles', i, 'state']))
         })
       }, Promise.resolve())
-      promise.then(() => console.log('PRINT READY'))
-      // dr.doodles.forEach(doodle => {
-      //   this.printBlock(doodle.header)
-      // })
     },
 
-    async printBlock (block, address, time = 0) {
+    async printBlock (block, address, time = 200) {
       return block.reduce((promiseChain, item, i) => {
         return promiseChain.then(() => {
           this.linePointers.push([...address, i])
+          if (this.linePointers.length > this.numRows) this.linePointers.shift()
           return new Promise(resolve => {
             setTimeout(() => {
               resolve()
@@ -97,10 +84,17 @@ export default {
      */
     async updateSettings (settings) {
       if (!settings) return
+      if (this.version) {
+        if (this.version !== settings.consoleVersion) {
+          window.location.reload()
+        }
+      } else {
+        this.version = settings.consoleVersion
+      }
       this.fontSize = settings.fontSize || 10
       this.maxSegments = settings.maxSegments || 5
       await this.$nextTick(() => {
-        this.numRows = window.innerHeight / this.fontSize
+        this.numRows = Math.floor(window.innerHeight / this.fontSize)
       })
     },
 
@@ -140,9 +134,10 @@ export default {
      * @return {string[]}
      */
     doodleStateStr (state, drW = 100, drawable) {
-      let l1 = ''
-      let l2 = ''
-      let l3 = ''
+      if (!state) return ['']
+      let l1 = this.space(4)
+      let l2 = this.space(4)
+      let l3 = this.space(4)
       state.forEach((segState, i) => {
         const cl = drawable.includes(i - 1) ? 'select' : 'box'
         l1 += `<span class="${cl}"><span class="spin dimmed">${this.space(2)}</span>` + this.number(segState.spin, 7) + '°' + this.space(2) + '</span>'
@@ -153,7 +148,7 @@ export default {
           l3 += `<span class="select"><span class="dimmed">y:</span>` + this.number(segState.yEnd / drW * 100, 7) + this.space(3) + '</span>'
         }
       })
-      return [l1, l2, l3]
+      return [l1, l2, l3, '', '']
     },
 
     /**
@@ -192,12 +187,14 @@ export default {
        *                        ✐         ✐
        */
       const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+      text += this.space(4)
       doodle.segments.forEach((seg, i) => {
         text += letters[i]
         text += this.space(11)
       })
       text += `${letters[doodle.segments.length]}
         `
+      text += this.space(4)
       doodle.segments.forEach((seg, i) => {
         if (i === 0) text += '<span class="box">|</span>'
         const l = this.number(seg.length / drW * 100, 5)
@@ -205,7 +202,7 @@ export default {
       })
       text += `
         `
-      text += '&nbsp;'
+      text += this.space(4) + '&nbsp;'
       doodle.segments.forEach((seg, i) => {
         if ((doodle.drawingPoints || []).includes(i) || i === doodle.segments.length - 1) {
           text += this.space(11) + '<span class="pen str">&nbsp;</span>'
@@ -305,6 +302,7 @@ export default {
  * @typedef {{
  *  fontSize: number,
  *  maxSegments: number,
+ *  consoleVersion: string,
  * }} Settings
  *
  * @typedef {{
@@ -348,21 +346,25 @@ export default {
     background: black;
   }
 #app {
-  font-family: 'Roboto Mono', monospace;
-  font-size: 18px;
-  line-height: 1;
   display: flex;
   flex-flow: column;
   justify-content: flex-end;
   padding: 0 0 0 10px;
-  color: #fff;
   background: black;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   height: 100vh;
+  overflow: hidden;
+  border-radius: 600px;
+
+  font-family: 'Roboto Mono', monospace;
+  font-size: 18px;
+  line-height: 1;
+  color: #fff;
 
   .line {
     min-height: 1em;
+    white-space: nowrap;
 
     .select {
       font-weight: 700;
