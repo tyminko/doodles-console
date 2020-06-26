@@ -21,7 +21,8 @@ export default {
     numRows: null,
     numCharInLine: null,
     linePointers: [],
-    version: null
+    version: null,
+    checkForCleaningDrawings: false
   }),
   created () {
     db.auth(user => {
@@ -30,6 +31,7 @@ export default {
         db.subscribeSettings(uid, this.updateSettings)
         db.subscribeDrawing(uid, drawingData => {
           this.updateDrawingData(drawingData)
+          this.checkForCleaningDrawings = true
           this.updateLines()
         })
         db.subscribeState(uid, this.updateStateData)
@@ -48,13 +50,30 @@ export default {
           return res[key]
         }, this.drawings)
       })
+    },
+
+    activeDrawings () {
+      return this.linePointers.reduce((res, pointer) => {
+        const drNr = pointer[0]
+        if (res.includes(drNr)) return res
+        return [...res, drNr]
+      }, [])
+    }
+  },
+
+  watch: {
+    activeDrawings () {
+      if (this.checkForCleaningDrawings) {
+        this.cleanupDrawings()
+        this.checkForCleaningDrawings = false
+      }
     }
   },
 
   methods: {
     async updateLines () {
       if (!this.currentDrawingNr) return
-      const dNr = this.currentDrawingNr
+      const dNr = this.currentDrawingNr + ''
       const dr = this.drawings[dNr]
       await this.printBlock(dr.header, [dNr, 'header'])
       await dr.doodles.reduce((promiseChain, doodle, i) => {
@@ -271,6 +290,15 @@ export default {
       const rounded = '' + this.round(n)
       const parts = rounded.split('.')
       return (parts[0] || '0').padStart(intCars, '\xa0') + '.' + (parts[1] || '0').padEnd(2, '0')
+    },
+
+    cleanupDrawings () {
+      // !!! DEBUG !!!
+      console.log(`%c cleanupDrawings() %c this.drawings: `, 'background:#ffbb00;color:#000', 'color:#00aaff', Object.keys(this.drawings))
+      console.log(`%c cleanupDrawings() %c this.activeDrawings: `, 'background:#ffbb00;color:#000', 'color:#00aaff', this.activeDrawings)
+      const toDelete = Object.keys(this.drawings).filter(drNr => !this.activeDrawings.includes(drNr))
+      console.log(`%c cleanupDrawings() %c toDelete: `, 'background:#ffbb00;color:#000', 'color:#00aaff', toDelete)
+      toDelete.forEach(drNr => this.$delete(this.drawings, drNr))
     }
   },
 
@@ -344,23 +372,29 @@ export default {
     min-height: 100vh;
     width: 100vw;
     background: black;
+    display: flex;
+    justify-content: center;
   }
 #app {
   display: flex;
   flex-flow: column;
   justify-content: flex-end;
-  padding: 0 0 0 10px;
-  background: black;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  height: 100vh;
+
+  width: 120vmin;
+  height: 100vmin;
+
+  padding: 0;
   overflow: hidden;
-  border-radius: 600px;
+  border-radius: 40vmin;
 
   font-family: 'Roboto Mono', monospace;
   font-size: 18px;
   line-height: 1;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
   color: #fff;
+  background: black;
 
   .line {
     min-height: 1em;
@@ -371,7 +405,7 @@ export default {
     }
 
     .box {
-      color: #b5b5b5;
+      color: #e3e3e3;
     }
     .dimmed {
       color: #a58bc3;
