@@ -151,7 +151,7 @@ export default {
       await this.$nextTick(() => {
         this.numRows = Math.floor(window.innerHeight / this.fontSize)
       })
-      // this.allowToPrint = !(settings.doodles || { pause: false }).pause
+      this.allowToPrint = !(settings.doodles || { pause: false }).pause
     },
 
     /**
