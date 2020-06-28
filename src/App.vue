@@ -6,21 +6,27 @@
 
 <script>
 import * as db from './lib/db'
+import { numberToAsciiLines } from './lib/ascii-numbers'
+
 export default {
   name: 'App',
   components: {
   },
   data: () => ({
     uid: null,
+    allowToPrint: true,
     fontSize: 18,
     maxSegments: 5,
     drawings: {},
+    curPrintingBlock: [],
+    lastPrintedLineIndex: 0,
+    printLineTimeout: null,
     currentDrawingDate: null,
     currentDrawingNr: null,
     currentDrawingWidth: null,
     numRows: null,
     numCharInLine: null,
-    linePointers: [],
+    onscreenLinePointers: [],
     version: null,
     checkForCleaningDrawings: false
   }),
@@ -32,7 +38,7 @@ export default {
         db.subscribeDrawing(uid, drawingData => {
           this.updateDrawingData(drawingData)
           this.checkForCleaningDrawings = true
-          this.updateLines()
+          this.startPrintingDrawing()
         })
         db.subscribeState(uid, this.updateStateData)
       }
@@ -44,17 +50,23 @@ export default {
     mainFontSizeStyle () {
       return { fontSize: `${this.fontSize}px` }
     },
+
     lines () {
-      return this.linePointers.map((pointer, i) => {
-        return pointer.reduce((res, key) => {
-          return res[key]
-        }, this.drawings)
+      return this.onscreenLinePointers.map((pointer, i) => {
+        if (!pointer) return
+        return this.getLineFromPointer(pointer)
       })
     },
 
+    drawingLinePointers () {
+      if (!this.currentDrawingNr) return []
+      const dNr = this.currentDrawingNr + ''
+      return this.objectToPointers(this.drawings[dNr], [dNr])
+    },
+
     activeDrawings () {
-      return this.linePointers.reduce((res, pointer) => {
-        const drNr = pointer[0]
+      return this.onscreenLinePointers.reduce((res, pointer) => {
+        const drNr = (pointer || [])[0] || ''
         if (res.includes(drNr)) return res
         return [...res, drNr]
       }, [])
@@ -67,35 +79,59 @@ export default {
         this.cleanupDrawings()
         this.checkForCleaningDrawings = false
       }
+    },
+    curPrintingBlock (val) {
+      if (!val.length && this.allowToPrint) {
+        this.printLineTimeout = setTimeout(() => {
+          this.printNextBlock()
+        }, 5000)
+      }
+    },
+
+    allowToPrint (value) {
+      if (value) {
+        this.startPrintingDrawing()
+      } else {
+        clearTimeout(this.printLineTimeout)
+      }
     }
   },
 
   methods: {
-    async updateLines () {
+    async startPrintingDrawing () {
       if (!this.currentDrawingNr) return
-      const dNr = this.currentDrawingNr + ''
-      const dr = this.drawings[dNr]
-      await this.printBlock(dr.header, [dNr, 'header'])
-      await dr.doodles.reduce((promiseChain, doodle, i) => {
-        return promiseChain.then(() => {
-          return this.printBlock(doodle.header, [dNr, 'doodles', i, 'header'])
-            .then(() => this.printBlock(doodle.state, [dNr, 'doodles', i, 'state']))
-        })
-      }, Promise.resolve())
+      this.curPrintingBlock = []
+      const headerLength = this.drawings[this.currentDrawingNr].header.length
+      this.lastPrintedLineIndex = Math.min(headerLength - 1, this.drawingLinePointers.length - 1)
+      this.printLineBlockWithTimeout(0, this.lastPrintedLineIndex)
     },
 
-    async printBlock (block, address, time = 200) {
-      return block.reduce((promiseChain, item, i) => {
-        return promiseChain.then(() => {
-          this.linePointers.push([...address, i])
-          if (this.linePointers.length > this.numRows) this.linePointers.shift()
-          return new Promise(resolve => {
-            setTimeout(() => {
-              resolve()
-            }, time)
-          })
-        })
-      }, Promise.resolve())
+    printNextBlock () {
+      if (!this.currentDrawingNr) return
+      let start = this.lastPrintedLineIndex + 1
+      if (start >= this.drawingLinePointers.length - 1) {
+        start = this.drawings[this.currentDrawingNr].header.length
+      }
+      const sample = this.drawings[this.currentDrawingNr].doodles[0]
+      const doodleLength = sample.header.length + sample.state.length
+      this.lastPrintedLineIndex = Math.min(start + doodleLength - 1, this.drawingLinePointers.length - 1)
+      this.printLineBlockWithTimeout(start, this.lastPrintedLineIndex)
+    },
+
+    printLineBlockWithTimeout (startN, lastN, timePerLine = 50) {
+      clearTimeout(this.printLineTimeout)
+      this.curPrintingBlock = [...this.drawingLinePointers].splice(startN, lastN - startN + 1)
+      const print = block => {
+        const toPrint = block.shift()
+        this.onscreenLinePointers.push(toPrint)
+        if (this.onscreenLinePointers.length > this.numRows) this.onscreenLinePointers.shift()
+        if (block.length) {
+          this.printLineTimeout = setTimeout(() => {
+            requestAnimationFrame(() => print(block))
+          }, timePerLine)
+        }
+      }
+      print(this.curPrintingBlock)
     },
 
     /**
@@ -115,6 +151,7 @@ export default {
       await this.$nextTick(() => {
         this.numRows = Math.floor(window.innerHeight / this.fontSize)
       })
+      // this.allowToPrint = !(settings.doodles || { pause: false }).pause
     },
 
     /**
@@ -125,11 +162,14 @@ export default {
       this.currentDrawingWidth = drawing.width
       this.currentDrawingDate = drawing
       this.$set(this.drawings, drawing.number, {
-        header: this.drawingHeaderStr(drawing).split('\n'),
-        doodles: drawing.doodles.map((doodle, i) => ({
-          header: this.doodleHeaderStr(doodle, i, drawing.number, drawing.width).split('\n'),
-          state: []
-        }))
+        header: this.drawingHeaderLines(drawing),
+        doodles: drawing.doodles.map((doodle, i) => {
+          const drawable = [...(doodle.drawingPoints || []), (doodle.segments || []).length - 1]
+          return {
+            header: this.doodleHeaderLines(doodle, i, drawing.number, drawing.width, drawable),
+            state: []
+          }
+        })
       })
     },
 
@@ -142,8 +182,118 @@ export default {
       this.drawings[this.currentDrawingNr].doodles.forEach((doodle, i) => {
         const dd = this.currentDrawingDate.doodles[i]
         const drawable = [...(dd.drawingPoints || []), (dd.segments || []).length - 1]
-        this.$set(this.drawings[this.currentDrawingNr].doodles[i], 'state', this.doodleStateStr(state[i], this.currentDrawingWidth, drawable))
+        this.$set(this.drawings[this.currentDrawingNr].doodles[i], 'state', this.doodleStateLines(state[i], this.currentDrawingWidth, drawable))
       })
+    },
+
+    /**
+     * @param {DrawingData} drawing
+     * @return {string[]}
+     */
+    drawingHeaderLines (drawing) {
+      /**
+       *  . .    ,  ,--. ,--.   ,  ,--- ,--. ,--, ,--. ,--. ,--.
+       * -|-|-  /|     /  __|  /|  |__  |__    /  \__/ \__| | /|
+       * -|-|- ' |  ,-'     | '-+-    \ |  \  /   /  \    | |/ |
+       *  ' `   -^- `--- `--'   `  `--' `--' '    `--' `--' `--'
+       *
+       * Drawing #12549, 4 Doodles (2x2):
+       *
+       *  1 │ 2
+       * ───┼───
+       *  3 │ 4
+       *
+       */
+      const lines = [
+        '&nbsp;',
+        '&nbsp;',
+        ...numberToAsciiLines(`#${drawing.number}`),
+        '&nbsp;',
+        '&nbsp;',
+        `<span class="str">Drawing #${drawing.number}</span>, ${drawing.doodles.length} Doodles (${drawing.columns}x${drawing.rows}):`,
+        '&nbsp;',
+        ...this.drawingTableLines(drawing.columns, drawing.rows),
+        '&nbsp;',
+        '&nbsp;'
+      ]
+      return lines.map(line => this.space(4) + line)
+    },
+
+    drawingTableLines (cols, rows) {
+      /**
+       *  1 │ 2
+       * ───┼───
+       *  3 │ 4
+       */
+      const count = cols * rows
+      const lines = []
+      for (let r = 0; r < rows; r++) {
+        if (r > 0) {
+          let line = ''
+          for (let c = 0; c < cols; c++) {
+            if (c > 0) line += `┼`
+            line += count > 9 ? `────` : `───`
+          }
+          lines.push(`<span class="box">${line}</span>`)
+        }
+        let line = ''
+        for (let c = 0; c < cols; c++) {
+          if (c > 0) line += `<span class="box">│</span>`
+          let nr = `${((c + 1) * (r + 1))}`
+          if (count > 9) nr = nr.padEnd(2, ' ')
+          line += `&nbsp;${nr}&nbsp;`
+        }
+        lines.push(line)
+      }
+      return lines
+    },
+
+    /**
+     * @param {DoodleData} doodle
+     * @param {string} index
+     * @param {number} drNum
+     * @param {number} drW
+     * @param {number[]} drawable
+     * @return {string[]}
+     */
+    doodleHeaderLines (doodle, index, drNum, drW, drawable) {
+      /*
+       * 1: Doodle #12549-1 (top-left)
+       * Virtual drawing devise: A chain of 3 spinning line-segments with a fixed origin and
+       * 2 drawing points on the vertices of the 2nd and 5th segments.
+       * Probability of a spin flip for each segment less than 10%
+       *
+       */
+      const doodN = `${index + 1}`
+      const numSegments = doodle.segments.length
+      const numPoints = (doodle.drawingPoints || []).length + 1
+      const chance = Math.round(this.round(doodle.probabilitySpinFlip) * 100)
+      const lines = []
+      lines.push(`${doodN.padEnd(2, ' ')}: Doodle <span class="num">#${drNum}-${doodN}</span>`)
+      lines.push(`<span class=" line-wrap"><span class="str">Drawing devise</span>: A chain of <span class="num">${numSegments}</span> spinning line-segments with a fixed origin and <span class="num">${numPoints}</span> drawing points.</span>`)
+      if (chance) {
+        lines.push(`Probability of spin flip for each segment less than <span class="num">${chance}%</span>`)
+      } else {
+        lines.push(`With constant spin direction`)
+      }
+      lines.push('&nbsp;')
+      /*
+       * |A          |B          |C ✐       |D ✐
+       * |-- 45.79   |-- 56.45   |-- 34.00   |
+       *
+       */
+      const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+      const segHeaderLines = ['', '']
+      const pen = `<span class="pen">&nbsp;</span>${this.space(8)}`
+      doodle.segments.forEach((seg, i) => {
+        const l = this.number(seg.length / drW * 100, 5)
+        segHeaderLines[0] += `<span class="box">|</span>${letters[i]}` + (drawable.includes(i - 1) ? pen : this.space(9))
+        segHeaderLines[1] += `<span class="box">|</span><span class="length dimmed">${this.space(3)}</span>${l}` + this.space(2)
+      })
+      segHeaderLines[0] += `<span class="box">|</span>${letters[doodle.segments.length]}` + pen
+      segHeaderLines[1] += `<span class="box">|</span>`
+
+      return [...lines, ...segHeaderLines]
     },
 
     /**
@@ -152,124 +302,28 @@ export default {
      * @param {number[]} drawable
      * @return {string[]}
      */
-    doodleStateStr (state, drW = 100, drawable) {
+    doodleStateLines (state, drW = 100, drawable) {
       if (!state) return ['']
-      let l1 = this.space(4)
-      let l2 = this.space(4)
-      let l3 = this.space(4)
+      let l1 = '' // this.space(4)
+      let l2 = '' // this.space(4)
+      let l3 = '' // this.space(4)
       state.forEach((segState, i) => {
         const cl = drawable.includes(i - 1) ? 'select' : 'box'
-        l1 += `<span class="${cl}"><span class="spin dimmed">${this.space(2)}</span>` + this.number(segState.spin, 7) + '°' + this.space(2) + '</span>'
-        l2 += `<span class="${cl}"><span class="dimmed">x:</span>` + this.number(segState.x / drW * 100, 7) + this.space(3) + '</span>'
-        l3 += `<span class="${cl}"><span class="dimmed">y:</span>` + this.number(segState.y / drW * 100, 7) + this.space(3) + '</span>'
+        const spin = this.number(segState.spin % 360, 7)
+        const x = this.number(segState.x / drW * 100, 7)
+        const y = this.number(segState.y / drW * 100, 7)
+        l1 += `<span class="box">|</span><span class="${cl}"><span class="spin dimmed">${this.space(2)}</span>` + spin + '°' + '</span>'
+        l2 += `<span class="box">|</span><span class="${cl}"><span class="dimmed">x:</span>` + x + this.space(1) + '</span>'
+        l3 += `<span class="box">|</span><span class="${cl}"><span class="dimmed">y:</span>` + y + this.space(1) + '</span>'
         if (segState.xEnd && segState.yEnd) {
-          l2 += `<span class="select"><span class="dimmed">x:</span>` + this.number(segState.xEnd / drW * 100, 7) + this.space(3) + '</span>'
-          l3 += `<span class="select"><span class="dimmed">y:</span>` + this.number(segState.yEnd / drW * 100, 7) + this.space(3) + '</span>'
+          const x = this.number(segState.xEnd / drW * 100, 7)
+          const y = this.number(segState.yEnd / drW * 100, 7)
+          l1 += `<span class="box">|</span>`
+          l2 += `<span class="box">|</span><span class="select"><span class="dimmed">x:</span>` + x + this.space(1) + '</span>'
+          l3 += `<span class="box">|</span><span class="select"><span class="dimmed">y:</span>` + y + this.space(1) + '</span>'
         }
       })
-      return [l1, l2, l3, '', '']
-    },
-
-    /**
-     * @param {DoodleData} doodle
-     * @param {string} index
-     * @param {number} drNum
-     * @param {number} drW
-     * @return {string}
-     */
-    doodleHeaderStr (doodle, index, drNum, drW) {
-      /*
-       * 1: Doodle #12549-1 (top-left)
-       * Virtual drawing devise: A chain of 3 spinning line-segments with a fixed origin and
-       * 2 drawing points on the vertices of the 2nd and 5th segments.
-       * Probability of a spin flip for each segment less than 10%
-       *
-      * */
-      const doodN = `${index + 1}`
-      const numSegments = doodle.segments.length
-      const numPoints = (doodle.drawingPoints || []).length + 1
-      const chance = Math.round(this.round(doodle.probabilitySpinFlip) * 100)
-      let text = `${doodN.padEnd(2, ' ')}: Doodle #${drNum}-${doodN}
-      <span class="str">Drawing devise</span>: A chain of <span class="num">${numSegments}</span> spinning line-segments with a fixed origin and <span class="num">${numPoints}</span> drawing points.
-      `
-      if (chance) {
-        text += `Probability of spin flip for each segment less than <span class="num">${chance}%</span>`
-      } else {
-        text += `With constant spin direction`
-      }
-      text += `
-      
-      `
-      /*
-       * A          B           A          D
-       * |⟵45.79⟶|⟵56.45⟶|⟵34.00⟶|
-       *                        ✐         ✐
-       */
-      const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-      text += this.space(4)
-      doodle.segments.forEach((seg, i) => {
-        text += letters[i]
-        text += this.space(11)
-      })
-      text += `${letters[doodle.segments.length]}
-        `
-      text += this.space(4)
-      doodle.segments.forEach((seg, i) => {
-        if (i === 0) text += '<span class="box">|</span>'
-        const l = this.number(seg.length / drW * 100, 5)
-        text += `<span class="box">───</span>${l}<span class="box">───|</span>`
-      })
-      text += `
-        `
-      text += this.space(4) + '&nbsp;'
-      doodle.segments.forEach((seg, i) => {
-        if ((doodle.drawingPoints || []).includes(i) || i === doodle.segments.length - 1) {
-          text += this.space(11) + '<span class="pen str">&nbsp;</span>'
-        } else {
-          text += this.space(12)
-        }
-      })
-      return text
-    },
-
-    /**
-     * @param {DrawingData} drawing
-     * @return {string}
-     */
-    drawingHeaderStr (drawing) {
-      /**
-       * Drawing #12549, 4 Doodles (2x2):
-       */
-      let text = `
-      <span class="str">Drawing #${drawing.number}</span>, ${drawing.doodles.length} Doodles (${drawing.columns}x${drawing.rows}):
-      
-      `
-      /**
-       *  1 │ 2
-       * ───┼───
-       *  3 │ 4
-       */
-      for (let r = 0; r < drawing.rows; r++) {
-        if (r > 0) {
-          for (let c = 0; c < drawing.columns; c++) {
-            text += '<span class="box">'
-            if (c > 0) text += `┼`
-            text += `───`
-            if (drawing.doodles.length > 9) text += `─`
-          }
-          text += `</span>
-`
-        }
-        for (let c = 0; c < drawing.columns; c++) {
-          if (c > 0) text += `<span class="box">│</span>`
-          let nr = `${((c + 1) * (r + 1))}`
-          if (drawing.doodles.length > 9) nr = nr.padEnd(2, ' ')
-          text += `&nbsp;${nr}&nbsp;`
-        }
-        text += `
-`
-      }
-      return text
+      return [l1, l2, l3, '&nbsp;', '&nbsp;']
     },
 
     /**
@@ -293,12 +347,33 @@ export default {
     },
 
     cleanupDrawings () {
-      // !!! DEBUG !!!
-      console.log(`%c cleanupDrawings() %c this.drawings: `, 'background:#ffbb00;color:#000', 'color:#00aaff', Object.keys(this.drawings))
-      console.log(`%c cleanupDrawings() %c this.activeDrawings: `, 'background:#ffbb00;color:#000', 'color:#00aaff', this.activeDrawings)
       const toDelete = Object.keys(this.drawings).filter(drNr => !this.activeDrawings.includes(drNr))
-      console.log(`%c cleanupDrawings() %c toDelete: `, 'background:#ffbb00;color:#000', 'color:#00aaff', toDelete)
       toDelete.forEach(drNr => this.$delete(this.drawings, drNr))
+    },
+
+    getLineFromPointer (pointer) {
+      return pointer.reduce((res, key) => {
+        return res[key]
+      }, this.drawings)
+    },
+
+    lastIndexOfPointerPattern (pattern) {
+      const matched = Object.entries(this.drawingLinePointers)
+        .filter((index, pointer) => pointer.join('').startsWith(pattern))
+      if (!matched.length) return -1
+      return matched[matched.length - 1][0]
+    },
+
+    objectToPointers (obj, pointer = []) {
+      return Object.entries(obj).reduce((res, [key, value]) => {
+        const p = [...pointer, key]
+        if (typeof value === 'object') {
+          res = [...res, ...this.objectToPointers(value, p)]
+        } else {
+          res.push(p)
+        }
+        return res
+      }, [])
     }
   },
 
@@ -306,26 +381,6 @@ export default {
     db.unsubscribe()
   }
 }
-/**
- * Drawing #12549, 4 Doodles (2x2):
- *
- *  1 │ 2
- * ───┼───
- *  3 │ 4
- *
- * 1: Doodle #12549-1 (top-left)
- * Virtual drawing devise: A chain of 3 spinning line-segments with a fixed origin and
- * 2 drawing points on the vertices of the 2nd and 5th segments.
- * Probability of a spin flip for each segment less than 10%
- *
- * A          B           A          D
- * |⟵45.79⟶|⟵56.45⟶|⟵34.00⟶|
- *                        ✐         ✐
- * ⤾ 0.2°     ⤿ -2.34°   ⤿ -0.34°  .
- * x: 65.34   x: 12.34    x: 12.34   x:12.34
- * y: 44.22   y:  5.22    y:  5.22   y: 5.22
- *
- */
 /**
  * @typedef {{
  *  fontSize: number,
@@ -397,15 +452,21 @@ export default {
   background: black;
 
   .line {
-    min-height: 1em;
+    /*min-height: 1em;*/
+    /*height: auto;*/
     white-space: nowrap;
+
+    .line-wrap {
+      height: auto;
+      white-space: normal;
+    }
 
     .select {
       font-weight: 700;
     }
 
     .box {
-      color: #e3e3e3;
+      color: #fff;
     }
     .dimmed {
       color: #a58bc3;
@@ -416,17 +477,26 @@ export default {
     .num {
       color: #00ffff;
     }
-    .pen {
+    .pen, .length {
       position: relative;
       &:after {
-        content: '✐';
-        background-color: #fffa78;
         padding: 0 2px;
-        color: black;
         position: absolute;
         left: 0;
         top: 50%;
         transform: translate(-2px, -50%);
+      }
+    }
+    .length {
+      &:after {
+        content: '⟷';
+      }
+    }
+    .pen {
+      &:after {
+        content: '✐';
+        color: #00ffff;
+        left: 5px;
       }
     }
     .spin {
